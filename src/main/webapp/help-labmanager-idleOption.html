@@ -2,12 +2,17 @@
     <p>
     Set the policy for what to do to the Virtual Machine once it has been
     determined to be idle.  The choices are to perform a Shutdown, a Shutdown
-    and Revert or a Suspend.  The shutdown action will attempt to perform a
+    and Revert, a Suspend or Undeploy.  The shutdown action will attempt to perform a
     clean shutdown of the OS.  The Shutdown and Revert option will perform a
     clean shutdown (which is needed in certain cases to ensure <i>Jenkins</i>
     sees the slave go away) and will then restore the Virtual Machine to its
     last revert point.  This revert point (called a snapshot in Lab Manager
     terminology) must be created outside of <i>Jenkins</i>.
+    Undeploy will <b>shutdown and undeploy</b> the machine. Using this option where a
+    low deployment lease is configured. Once all machines of a configuration
+    have been undeployed, the configuration gets undeployed too. The next time
+    a machine is requested from this configuration, the configuration and the machines
+    are getting deployed.
     </p>
     <p>
     It is recommended to perform a Shutdown on the Virtual Machine rather than

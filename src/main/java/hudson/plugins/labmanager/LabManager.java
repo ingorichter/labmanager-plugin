@@ -22,38 +22,43 @@
  */
 package hudson.plugins.labmanager;
 
-import hudson.util.FormValidation;
-import hudson.util.Scrambler;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.ArrayOfMachine;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.AuthenticationHeader;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.AuthenticationHeaderE;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.GetSingleConfigurationByName;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.GetSingleConfigurationByNameResponse;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.ListMachines;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.ListMachinesResponse;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.Machine;
+import hudson.Extension;
 import hudson.Util;
 import hudson.model.Descriptor;
 import hudson.model.Label;
-import hudson.Extension;
 import hudson.slaves.Cloud;
 import hudson.slaves.NodeProvisioner;
+import hudson.util.FormValidation;
+import hudson.util.Scrambler;
+import java.security.KeyStore;
+import java.security.Provider;
+import java.security.Security;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
-import org.kohsuke.stapler.DataBoundConstructor;
-import org.kohsuke.stapler.QueryParameter;
-
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentHashMap;
-
-import net.sf.json.JSONObject;
-import org.kohsuke.stapler.StaplerRequest;
-
-import java.security.Security;
-import java.security.KeyStore;
-import java.security.Provider;
-import java.security.cert.X509Certificate;
+import java.util.concurrent.ConcurrentMap;
 import javax.net.ssl.ManagerFactoryParameters;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactorySpi;
 import javax.net.ssl.X509TrustManager;
-
-import com.vmware.labmanager.*;
-import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.*;
+import net.sf.json.JSONObject;
+import org.apache.axis2.client.Options;
+import org.apache.axis2.transport.http.HTTPConstants;
+import org.kohsuke.stapler.DataBoundConstructor;
+import org.kohsuke.stapler.QueryParameter;
+import org.kohsuke.stapler.StaplerRequest;
 
 /**
  * Represents a virtual Lab Manager Organization/Workspace/Configuration
@@ -62,6 +67,8 @@ import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.*;
  * @author Tom Rini <tom_rini@mentor.com>
  */
 public class LabManager extends Cloud {
+
+    private static final String LabManagerSOAPEndpoint = "/LabManager/SOAP/LabManagerInternal.asmx";
     private final String lmHost;
     private final String lmDescription;
     private final String lmOrganization;
@@ -72,7 +79,6 @@ public class LabManager extends Cloud {
     private final int maxOnlineSlaves;
     private transient int currentOnlineSlaveCount = 0;
     private transient ArrayList currentOnlineSlaves;
-
     /**
      * Information to connect to Lab Manager and send SOAP requests.
      */
@@ -80,9 +86,9 @@ public class LabManager extends Cloud {
 
     @DataBoundConstructor
     public LabManager(String lmHost, String lmDescription,
-                    String lmOrganization, String lmWorkspace,
-                    String lmConfiguration, String username,
-                    String password, int maxOnlineSlaves) {
+            String lmOrganization, String lmWorkspace,
+            String lmConfiguration, String username,
+            String password, int maxOnlineSlaves) {
         super("LabManager");
         this.lmHost = lmHost;
         this.lmDescription = lmDescription;
@@ -109,7 +115,7 @@ public class LabManager extends Cloud {
         /* Install the all-trusting trust manager */
         Security.addProvider( new DummyTrustProvider() );
         Security.setProperty("ssl.TrustManagerFactory.algorithm",
-            "TrustAllCertificates");
+                "TrustAllCertificates");
     }
 
     public String getLmHost() {
@@ -150,6 +156,7 @@ public class LabManager extends Cloud {
     public synchronized int markOneSlaveOnline(String vmName) {
         if (currentOnlineSlaves == null)
             currentOnlineSlaves = new ArrayList();
+
         currentOnlineSlaves.add(vmName);
         return ++currentOnlineSlaveCount;
     }
@@ -171,7 +178,16 @@ public class LabManager extends Cloud {
 
         LabManager_x0020_SOAP_x0020_interfaceStub lmStub = null;
         try {
-            lmStub = new LabManager_x0020_SOAP_x0020_interfaceStub(lmHost + "/LabManager/SOAP/LabManager.asmx");
+            lmStub = new LabManager_x0020_SOAP_x0020_interfaceStub(lmHost + LabManager.LabManagerSOAPEndpoint);
+
+            // Increase the Socket and Connection timeout, since operations like
+            // deploy and undeploy can take some time to finish
+            // TODO: Perhaps this should be configurable
+            final int timeOutInMilliSeconds = 3 * 60 * 1000;
+            final Options options = lmStub._getServiceClient().getOptions();
+            options.setProperty(HTTPConstants.SO_TIMEOUT, new Integer(timeOutInMilliSeconds));
+            options.setProperty(HTTPConstants.CONNECTION_TIMEOUT, new Integer(timeOutInMilliSeconds));
+
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -235,6 +251,7 @@ public class LabManager extends Cloud {
 
     @Extension
     public static final class DescriptorImpl extends Descriptor<Cloud> {
+
         public final ConcurrentMap<String, LabManager> hypervisors = new ConcurrentHashMap<String, LabManager>();
         private String lmHost;
         private String lmOrganization;
@@ -282,7 +299,7 @@ public class LabManager extends Cloud {
                     /* Perform other sanity checks. */
                     if (!lmHost.startsWith("https://"))
                         return FormValidation.error("Lab Manager host must start with https://");
-                }
+                    }
 
                 if (lmOrganization.length() == 0)
                     return FormValidation.error("Lab Manager organization is not specified");
@@ -299,10 +316,11 @@ public class LabManager extends Cloud {
                 /* Install the all-trusting trust manager */
                 Security.addProvider( new DummyTrustProvider() );
                 Security.setProperty("ssl.TrustManagerFactory.algorithm",
-                    "TrustAllCertificates");
+                        "TrustAllCertificates");
 
                 /* Try and connect to it. */
-                LabManager_x0020_SOAP_x0020_interfaceStub stub = new LabManager_x0020_SOAP_x0020_interfaceStub(lmHost + "/LabManager/SOAP/LabManager.asmx");
+                LabManager_x0020_SOAP_x0020_interfaceStub stub = 
+                        new LabManager_x0020_SOAP_x0020_interfaceStub(lmHost + LabManagerSOAPEndpoint);
                 AuthenticationHeader ah = new AuthenticationHeader();
                 ah.setUsername(username);
                 ah.setPassword(password);
@@ -331,6 +349,7 @@ public class LabManager extends Cloud {
      **/
 
     private static class DummyTrustProvider extends Provider {
+
         public DummyTrustProvider() {
             super( "DummyTrustProvider", 1.0, "Trust certificates" );
             put( "TrustManagerFactory.TrustAllCertificates",

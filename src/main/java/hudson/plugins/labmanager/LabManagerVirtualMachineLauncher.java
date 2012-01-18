@@ -22,24 +22,30 @@
  */
 package hudson.plugins.labmanager;
 
-import hudson.slaves.ComputerLauncher;
-import hudson.slaves.SlaveComputer;
-import hudson.model.TaskListener;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.AuthenticationHeaderE;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.Configuration;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.ConfigurationDeploy;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.GetMachineByName;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.GetMachineByNameResponse;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.GetSingleConfigurationByName;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.GetSingleConfigurationByNameResponse;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.Machine;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.MachinePerformAction;
+import hudson.Util;
 import hudson.model.Descriptor;
 import hudson.model.Hudson;
-import hudson.Extension;
+import hudson.model.TaskListener;
+import hudson.plugins.sshslaves.SSHLauncher;
 import hudson.slaves.Cloud;
-import hudson.Util;
-
+import hudson.slaves.ComputerLauncher;
+import hudson.slaves.SlaveComputer;
 import java.io.IOException;
-import java.util.Map;
+import java.io.PrintStream;
+import java.rmi.RemoteException;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-
 import org.kohsuke.stapler.DataBoundConstructor;
-
-import com.vmware.labmanager.*;
-import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.*;
 
 /**
  * {@link ComputerLauncher} for Lab Manager that waits for the Virtual Machine
@@ -57,26 +63,39 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
     private int idleAction;
     private Boolean overrideLaunchSupported;
     private int launchDelay;
-
+    private boolean updateHostAddress;
     /**
      * Constants.
      */
+
     /* Machine status codes. */
+    private static final int MACHINE_STATUS_UNDEPLOYED = 0;
     private static final int MACHINE_STATUS_OFF = 1;
     private static final int MACHINE_STATUS_ON = 2;
     private static final int MACHINE_STATUS_SUSPENDED = 3;
     private static final int MACHINE_STATUS_STUCK = 4;
     private static final int MACHINE_STATUS_INVALID = 128;
 
-    /* Machine action codes. */
-    private static final int MACHINE_ACTION_ON = 1;
-    private static final int MACHINE_ACTION_OFF = 2;
-    private static final int MACHINE_ACTION_SUSPEND = 3;
-    private static final int MACHINE_ACTION_RESUME = 4;
-    private static final int MACHINE_ACTION_RESET = 5;
-    private static final int MACHINE_ACTION_SNAPSHOT = 6;
-    private static final int MACHINE_ACTION_REVERT = 7;
-    private static final int MACHINE_ACTION_SHUTDOWN = 8;
+    /*
+     * Machine action codes.
+     */
+    public static final int MACHINE_ACTION_NONE = 0;
+    public static final int MACHINE_ACTION_ON = 1;
+    public static final int MACHINE_ACTION_OFF = 2;
+    public static final int MACHINE_ACTION_SUSPEND = 3;
+    public static final int MACHINE_ACTION_RESUME = 4;
+    public static final int MACHINE_ACTION_RESET = 5;
+    public static final int MACHINE_ACTION_SNAPSHOT = 6;
+    public static final int MACHINE_ACTION_REVERT = 7;
+    public static final int MACHINE_ACTION_SHUTDOWN = 8;
+    // this is part of the VM Lab Manager internal SOAP API
+    public static final int MACHINE_ACTION_DEPLOY = 12;
+    public static final int MACHINE_ACTION_UNDEPLOY = 13;
+
+    /*
+     * Fence mode for configuration deployment
+     */
+    private static final int FENCE_MODE_ALLOW_IN_AND_OUT = 4;  // allow in and out
 
     /**
      * @param delegate The real {@link ComputerLauncher} we have been passed.
@@ -88,12 +107,14 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
      * @param overrideLaunchSupported Boolean to set of we force
      * isLaunchSupported to always return True.
      * @param launchDelay How long to wait between bringing up the VM and
-     * trying to connect to it as a slave.
+     * @param updateHostAddress Update the host address if the launcher starts
+     * the slave by using a ssh connection.
      */
     @DataBoundConstructor
     public LabManagerVirtualMachineLauncher(ComputerLauncher delegate,
-                    String lmDescription, String vmName, String idleOption,
-                    Boolean overrideLaunchSupported, String launchDelay) {
+            String lmDescription, String vmName, String idleOption,
+            Boolean overrideLaunchSupported, String launchDelay,
+            boolean updateHostAddress) {
         super();
         this.delegate = delegate;
         this.lmDescription = lmDescription;
@@ -102,10 +123,14 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
             idleAction = MACHINE_ACTION_SHUTDOWN;
         else if ("Shutdown and Revert".equals(idleOption))
             idleAction = MACHINE_ACTION_REVERT;
+        else if ("Undeploy".equals(idleOption))
+            idleAction = MACHINE_ACTION_UNDEPLOY;
         else
             idleAction = MACHINE_ACTION_SUSPEND;
+
         this.overrideLaunchSupported = overrideLaunchSupported;
         this.launchDelay = Util.tryParseNumber(launchDelay, 60).intValue();
+        this.updateHostAddress = updateHostAddress;
     }
 
     /**
@@ -135,34 +160,44 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
      * Machine object.  We know that the machine name is unique to the
      * configuration.
      */
-    private Machine getMachine(LabManager labmanager,
-                    LabManager_x0020_SOAP_x0020_interfaceStub lmStub,
-                    AuthenticationHeaderE lmAuth)
+    private Machine getMachine(LabManager labmanager)
             throws java.rmi.RemoteException {
-        Machine vm = null;
-        GetSingleConfigurationByName gscbnReq = new GetSingleConfigurationByName();
-        gscbnReq.setName(labmanager.getLmConfiguration());
-        GetSingleConfigurationByNameResponse gscbnResp = lmStub.getSingleConfigurationByName(gscbnReq, lmAuth);
-        ListMachines lmReq = new ListMachines();
-        lmReq.setConfigurationId(gscbnResp.getGetSingleConfigurationByNameResult().getId());
-        ListMachinesResponse lmResp = lmStub.listMachines(lmReq, lmAuth);
+        AuthenticationHeaderE lmAuth = labmanager.getLmAuth();
+        LabManager_x0020_SOAP_x0020_interfaceStub lmStub = labmanager.getLmStub();
 
-        ArrayOfMachine aom = lmResp.getListMachinesResult();
-        for (Machine mach : aom.getMachine()) {
-            if (mach.getName().equals(this.vmName))
-                vm = mach;
-        }
+        final Configuration configuration = getSingleConfiguration(labmanager);
+
+        final GetMachineByName getMachineByNameRequest = new GetMachineByName();
+        getMachineByNameRequest.setConfigurationId(configuration.getId());
+        getMachineByNameRequest.setName(this.vmName);
+        GetMachineByNameResponse machineByName = 
+                lmStub.getMachineByName(getMachineByNameRequest, lmAuth);
+        Machine vm = machineByName.getGetMachineByNameResult();
 
         return vm;
+    }
+
+    private Configuration getSingleConfiguration(LabManager labmanager) throws java.rmi.RemoteException {
+        AuthenticationHeaderE lmAuth = labmanager.getLmAuth();
+        LabManager_x0020_SOAP_x0020_interfaceStub lmStub = labmanager.getLmStub();
+
+        GetSingleConfigurationByName gscbnReq = new GetSingleConfigurationByName();
+        gscbnReq.setName(labmanager.getLmConfiguration());
+        final GetSingleConfigurationByNameResponse singleConfigurationByName =
+                lmStub.getSingleConfigurationByName(gscbnReq, lmAuth);
+
+        final Configuration configuration = singleConfigurationByName.getGetSingleConfigurationByNameResult();
+        return configuration;
     }
 
     /**
      * Perform the specified action on the specified machine via SOAP.
      */
-    private static void performAction(LabManager labmanager,
-                    LabManager_x0020_SOAP_x0020_interfaceStub lmStub,
-                    AuthenticationHeaderE lmAuth, Machine vm, int action) 
+    private void performMachineAction(LabManager labmanager, Machine vm, int action)
             throws java.rmi.RemoteException {
+        AuthenticationHeaderE lmAuth = labmanager.getLmAuth();
+        LabManager_x0020_SOAP_x0020_interfaceStub lmStub = labmanager.getLmStub();
+
         MachinePerformAction mpaReq = new MachinePerformAction();
         mpaReq.setAction(action);
         mpaReq.setMachineId(vm.getId());
@@ -171,13 +206,27 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
         lmStub.machinePerformAction(mpaReq, lmAuth);
     }
 
+    private void deployConfiguration(LabManager labmanager,
+            Configuration configuration) throws RemoteException {
+        final AuthenticationHeaderE lmAuth = labmanager.getLmAuth();
+        final LabManager_x0020_SOAP_x0020_interfaceStub lmStub = labmanager.getLmStub();
+
+        final ConfigurationDeploy configurationDeploy = new ConfigurationDeploy();
+        configurationDeploy.setConfigurationId(configuration.getId());
+        configurationDeploy.setFenceMode(FENCE_MODE_ALLOW_IN_AND_OUT);
+
+        lmStub.configurationDeploy(configurationDeploy, lmAuth);
+    }
+
     /**
      * Do the real work of launching the machine via SOAP.
      */
     @Override
     public void launch(SlaveComputer slaveComputer, TaskListener taskListener)
             throws IOException, InterruptedException {
-        taskListener.getLogger().println("Starting Virtual Machine...");
+        final PrintStream logger = taskListener.getLogger();
+
+        logger.println("Starting Virtual Machine...");
         /**
          * What we know is that at least at one point this particular
          * machine existed.  But we want to be sure it still exists.
@@ -187,13 +236,15 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
          * right now so we need to call our getMachine.
          */
         LabManager labmanager = findOurLmInstance();
-        LabManager_x0020_SOAP_x0020_interfaceStub lmStub = labmanager.getLmStub();
-        AuthenticationHeaderE lmAuth = labmanager.getLmAuth();
-        int machineAction = 0;
-        Machine vm = getMachine(labmanager, lmStub, lmAuth);
+        Machine vm = getMachine(labmanager);
+
+        int machineAction = MACHINE_ACTION_NONE;
 
         /* Determine the current state of the VM. */
         switch (vm.getStatus()) {
+            case MACHINE_STATUS_UNDEPLOYED:
+                machineAction = MACHINE_ACTION_DEPLOY;
+                break;
             case MACHINE_STATUS_OFF:
                 machineAction = MACHINE_ACTION_ON;
                 break;
@@ -209,20 +260,49 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
                 throw new IOException("Problem with the machine status");
         }
 
-        /* Perform the action, if needed.  This will be sleeping until
-         * it returns from the server. */
-        if (machineAction != 0)
-            performAction(labmanager, lmStub, lmAuth, vm, machineAction);
+        /*
+         * Perform check if configuration is deployed and then deploy
+         * configuration
+         */        
+        if (machineAction == MACHINE_ACTION_DEPLOY) {
+            Configuration configuration = getSingleConfiguration(labmanager);
+
+            if (!configuration.getIsDeployed()) {
+                // Deploying a configuration will automatically deploy all the VMs
+                logger.printf("Deploy configuration '%s'\n", configuration.getName());
+                deployConfiguration(labmanager, configuration);
+                logger.printf("Configuration '%s' successfully deployed\n", configuration.getName());
+            } else {
+                logger.printf("Deploying virtual machine '%s' in configuration '%s'\n", vm.getName(), configuration.getName());
+                performMachineAction(labmanager, vm, machineAction);
+                logger.printf("Virtual machine '%s' successfully deployed\n", vm.getName());
+            }
+        } else {
+            /*
+             * Perform the action, if needed. This will be sleeping until it
+             * returns from the server.
+             */
+            if (machineAction != MACHINE_ACTION_NONE) {
+                performMachineAction(labmanager, vm, machineAction);
+            }
+        }
+
+        // update VM information
+        vm = getMachine(labmanager);
 
         try {
             /* At this point we have told Lab Manager to get the VM going.
              * Now we wait our launch delay amount before trying to connect. */
             Thread.sleep(launchDelay * 1000);
-            delegate.launch(slaveComputer, taskListener);
+
+            final ComputerLauncher decoratedLauncherDelegateForMachine = 
+                    getDecoratedLauncherDelegateForMachine(vm);
+            decoratedLauncherDelegateForMachine.launch(slaveComputer, taskListener);
         } finally {
             /* If the rest of the launcher fails, we free up a space. */
-            if (slaveComputer.getChannel() == null)
+            if (slaveComputer.getChannel() == null) {
                 labmanager.markOneSlaveOffline(slaveComputer.getDisplayName());
+            }
         }
     }
 
@@ -231,19 +311,16 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
      */
     @Override
     public void afterDisconnect(SlaveComputer slaveComputer,
-                    TaskListener taskListener) {
+            TaskListener taskListener) {
         taskListener.getLogger().println("Running disconnect procedure...");
         delegate.afterDisconnect(slaveComputer, taskListener);
         taskListener.getLogger().println("Shutting down Virtual Machine...");
 
         LabManager labmanager = findOurLmInstance();
         labmanager.markOneSlaveOffline(slaveComputer.getDisplayName());
-        LabManager_x0020_SOAP_x0020_interfaceStub lmStub = labmanager.getLmStub();
-        AuthenticationHeaderE lmAuth = labmanager.getLmAuth();
 
         try {
-            int machineAction = 0;
-            Machine vm = getMachine(labmanager, lmStub, lmAuth);
+            Machine vm = getMachine(labmanager);
 
             /* Determine the current state of the VM. */
             switch (vm.getStatus()) {
@@ -260,14 +337,13 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
                      */
                     switch (idleAction) {
                         case MACHINE_ACTION_REVERT:
-                            performAction(labmanager, lmStub, lmAuth, vm,
-                                            MACHINE_ACTION_OFF);
+                            performMachineAction(labmanager, vm, MACHINE_ACTION_OFF);
                             taskListener.getLogger().println("Waiting 60 seconds for shutdown to complete.");
                             Thread.sleep(60000);
                         case MACHINE_ACTION_SUSPEND:
                         case MACHINE_ACTION_SHUTDOWN:
-                            performAction(labmanager, lmStub, lmAuth, vm,
-                                            idleAction);
+                        case MACHINE_ACTION_UNDEPLOY:
+                            performMachineAction(labmanager, vm, idleAction);
                             break;
                     }
                     break;
@@ -302,11 +378,11 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
 
     @Override
     public boolean isLaunchSupported() {
-        if (this.overrideLaunchSupported == null)
+        if (this.overrideLaunchSupported == null) {
             return delegate.isLaunchSupported();
-        else {
-                LOGGER.log(Level.FINE, "Launch support is overridden to always return: " + overrideLaunchSupported);
-                return overrideLaunchSupported;
+        } else {
+            LOGGER.log(Level.FINE, "Launch support is overridden to always return: " + overrideLaunchSupported);
+            return overrideLaunchSupported;
         }
     }
 
@@ -319,5 +395,52 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
     public Descriptor<ComputerLauncher> getDescriptor() {
         // Don't allow creation of launcher from UI
         throw new UnsupportedOperationException();
+    }
+
+    public int getIdleAction() {
+        return idleAction;
+    }
+
+    public boolean isUpdateHostAddress() {
+        return updateHostAddress;
+    }
+
+    public void setUpdateHostAddress(boolean updateHostAddress) {
+        this.updateHostAddress = updateHostAddress;
+    }
+
+    /*
+     * Create a new SSHLauncher when the IP address of the VM changed. This
+     * usually happens if the VM was redeployed. Implementation note: I can't
+     * create a "clean" decorator for the SSHLauncher, since SSHLauncher doesn't
+     * have an interface. Therefore I'm creating a copy of the existing
+     * SSHLauncher and copy all attributes to the new instance. The only
+     * attribute untouched is the JdkInstaller, since this is not accessible
+     * through SSHLaunchers public methods. Another way to prevent the creation
+     * of the decorator, is to make the host attribute writable on the
+     * SSHLauncher. The new SSHLauncher will not be persisted and you won't see
+     * the current ip in the node configuration UI.
+     */
+    public ComputerLauncher getDecoratedLauncherDelegateForMachine(final Machine machine) {
+        ComputerLauncher computerLauncher = getDelegate();
+
+        if (computerLauncher instanceof SSHLauncher) {
+            if (updateHostAddress) {
+                SSHLauncher oldLauncher = (SSHLauncher) computerLauncher;
+
+                if (!oldLauncher.getHost().equals(machine.getExternalIP())) {
+                    LOGGER.log(Level.FINE, "Create a new SSHLauncher with new host information");
+
+                    computerLauncher = new SSHLauncher(machine.getExternalIP(), oldLauncher.getPort(), oldLauncher.getUsername(),
+                            oldLauncher.getPassword(), oldLauncher.getPrivatekey(), oldLauncher.getJvmOptions(),
+                            oldLauncher.getJavaPath(), null /*
+                             * potentially wrong!
+                             */, oldLauncher.getPrefixStartSlaveCmd(),
+                            oldLauncher.getSuffixStartSlaveCmd());
+                }
+            }
+        }
+
+        return computerLauncher;
     }
 }
