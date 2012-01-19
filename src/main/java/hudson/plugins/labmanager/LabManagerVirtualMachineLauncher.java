@@ -431,11 +431,15 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
                 if (!oldLauncher.getHost().equals(machine.getExternalIP())) {
                     LOGGER.log(Level.FINE, "Create a new SSHLauncher with new host information");
 
-                    computerLauncher = new SSHLauncher(machine.getExternalIP(), oldLauncher.getPort(), oldLauncher.getUsername(),
-                            oldLauncher.getPassword(), oldLauncher.getPrivatekey(), oldLauncher.getJvmOptions(),
-                            oldLauncher.getJavaPath(), null /*
-                             * potentially wrong!
-                             */, oldLauncher.getPrefixStartSlaveCmd(),
+                    computerLauncher = new SSHLauncher(machine.getExternalIP(), 
+                            oldLauncher.getPort(), 
+                            oldLauncher.getUsername(),
+                            oldLauncher.getPassword(), 
+                            oldLauncher.getPrivatekey(), 
+                            oldLauncher.getJvmOptions(),
+                            oldLauncher.getJavaPath(), 
+                            null /* JDK installer. potentially wrong! */, 
+                            oldLauncher.getPrefixStartSlaveCmd(),
                             oldLauncher.getSuffixStartSlaveCmd());
                 }
             }

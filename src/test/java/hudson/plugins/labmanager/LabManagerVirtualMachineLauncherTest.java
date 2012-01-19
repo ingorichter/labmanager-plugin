@@ -1,9 +1,21 @@
 package hudson.plugins.labmanager;
 
 import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.AuthenticationHeaderE;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.Configuration;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.GetConfiguration;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.GetMachineByName;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.GetMachineByNameResponse;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.GetSingleConfigurationByName;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.GetSingleConfigurationByNameResponse;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.Machine;
+import com.vmware.labmanager.LabManager_x0020_SOAP_x0020_interfaceStub.MachinePerformAction;
+import hudson.ExtensionList;
+import hudson.model.Descriptor.FormException;
 import hudson.model.Hudson;
 import hudson.model.Node;
 import hudson.model.TaskListener;
+import hudson.plugins.labmanager.LabManagerVirtualMachineSlave.LabManagerVirtualMComputerListener;
 import hudson.plugins.sshslaves.SSHLauncher;
 import hudson.slaves.*;
 import java.io.ByteArrayOutputStream;
@@ -37,7 +49,7 @@ public class LabManagerVirtualMachineLauncherTest extends HudsonTestCase {
 
         // add LabManager Test Cloud
         testCloud = new LabManager("http://labhost:8080", "Test Lab Manager", "TestOrg", "Test Workspace",
-                "Test Configuration", "TestUser", "Test Password", 0);
+                "Test Configuration", "TestUser", "Test Password", 2);
 
         Hudson.getInstance().clouds.add(testCloud);
 
@@ -92,33 +104,33 @@ public class LabManagerVirtualMachineLauncherTest extends HudsonTestCase {
                 mock(LabManager_x0020_SOAP_x0020_interfaceStub.class);
 
         // Prepare Configuration mock
-        LabManager_x0020_SOAP_x0020_interfaceStub.Configuration configuration =
-                mock(LabManager_x0020_SOAP_x0020_interfaceStub.Configuration.class);
+        Configuration configuration =
+                mock(Configuration.class);
         when(configuration.getId()).thenReturn(123456);
 
         // prepare single configuration response
-        LabManager_x0020_SOAP_x0020_interfaceStub.GetSingleConfigurationByNameResponse getSingleConfigurationByNameResponse =
-                mock(LabManager_x0020_SOAP_x0020_interfaceStub.GetSingleConfigurationByNameResponse.class);
+        GetSingleConfigurationByNameResponse getSingleConfigurationByNameResponse =
+                mock(GetSingleConfigurationByNameResponse.class);
         when(getSingleConfigurationByNameResponse.getGetSingleConfigurationByNameResult()).thenReturn(configuration);
 
         // prepare the machine mock
-        LabManager_x0020_SOAP_x0020_interfaceStub.Machine mockMachine =
-                mock(LabManager_x0020_SOAP_x0020_interfaceStub.Machine.class);
+        Machine mockMachine =
+                mock(Machine.class);
         when(mockMachine.getName()).thenReturn(vmName);
         when(mockMachine.getStatus()).thenReturn(2); // STATUS_ON
 
-        final LabManager_x0020_SOAP_x0020_interfaceStub.GetMachineByNameResponse mockGetMachineByNameResponse =
-                mock(LabManager_x0020_SOAP_x0020_interfaceStub.GetMachineByNameResponse.class);
+        final GetMachineByNameResponse mockGetMachineByNameResponse =
+                mock(GetMachineByNameResponse.class);
         when(mockGetMachineByNameResponse.getGetMachineByNameResult()).thenReturn(mockMachine);
 
         // prepare the SOAPInterface to return our mock objects
         when(mockSOAPInterface.getSingleConfigurationByName(
-                any(LabManager_x0020_SOAP_x0020_interfaceStub.GetSingleConfigurationByName.class),
-                any(LabManager_x0020_SOAP_x0020_interfaceStub.AuthenticationHeaderE.class))).thenReturn
+                any(GetSingleConfigurationByName.class),
+                any(AuthenticationHeaderE.class))).thenReturn
                 (getSingleConfigurationByNameResponse);
         when(mockSOAPInterface.getMachineByName(
-                any(LabManager_x0020_SOAP_x0020_interfaceStub.GetMachineByName.class),
-                any(LabManager_x0020_SOAP_x0020_interfaceStub.AuthenticationHeaderE.class))).thenReturn(mockGetMachineByNameResponse);
+                any(GetMachineByName.class),
+                any(AuthenticationHeaderE.class))).thenReturn(mockGetMachineByNameResponse);
         
         // prepare our LabManager to return the mock SOAPInterface
         final LabManager mockLabManager = mock(LabManager.class);
@@ -163,8 +175,7 @@ public class LabManagerVirtualMachineLauncherTest extends HudsonTestCase {
                 (mockComputerSSHLauncher, "TestLM", vmName, "idle option", false, "0", false);
 
         // prepare the machine mock
-        LabManager_x0020_SOAP_x0020_interfaceStub.Machine mockMachine =
-                mock(LabManager_x0020_SOAP_x0020_interfaceStub.Machine.class);
+        Machine mockMachine = mock(Machine.class);
         when(mockMachine.getStatus()).thenReturn(2); // STATUS_ON
         when(mockMachine.getExternalIP()).thenReturn("10.20.30.40"); //new IP Address
 
@@ -179,12 +190,12 @@ public class LabManagerVirtualMachineLauncherTest extends HudsonTestCase {
         SSHLauncher mockComputerSSHLauncher = mock(SSHLauncher.class);
         when(mockComputerSSHLauncher.getHost()).thenReturn("10.20.30.40");
 
-        LabManagerVirtualMachineLauncher labManagerVirtualMachineLauncher = new LabManagerVirtualMachineLauncher
+        LabManagerVirtualMachineLauncher labManagerVirtualMachineLauncher = 
+                new LabManagerVirtualMachineLauncher
                 (mockComputerSSHLauncher, "TestLM", vmName, "idle option", false, "0", true);
 
         // prepare the machine mock
-        LabManager_x0020_SOAP_x0020_interfaceStub.Machine mockMachine =
-                mock(LabManager_x0020_SOAP_x0020_interfaceStub.Machine.class);
+        Machine mockMachine = mock(Machine.class);
         when(mockMachine.getStatus()).thenReturn(2); // STATUS_ON
         when(mockMachine.getExternalIP()).thenReturn("30.30.30.30"); //new IP Address
 
@@ -206,34 +217,32 @@ public class LabManagerVirtualMachineLauncherTest extends HudsonTestCase {
                 mock(LabManager_x0020_SOAP_x0020_interfaceStub.class);
 
         // Prepare Configuration mock
-        LabManager_x0020_SOAP_x0020_interfaceStub.Configuration configuration =
-                mock(LabManager_x0020_SOAP_x0020_interfaceStub.Configuration.class);
+        Configuration configuration = mock(Configuration.class);
         when(configuration.getId()).thenReturn(123456);
 
         // prepare single configuration response
-        LabManager_x0020_SOAP_x0020_interfaceStub.GetSingleConfigurationByNameResponse getSingleConfigurationByNameResponse =
-                mock(LabManager_x0020_SOAP_x0020_interfaceStub.GetSingleConfigurationByNameResponse.class);
+        GetSingleConfigurationByNameResponse getSingleConfigurationByNameResponse =
+                mock(GetSingleConfigurationByNameResponse.class);
         when(getSingleConfigurationByNameResponse.getGetSingleConfigurationByNameResult()).thenReturn(configuration);
 
         // prepare the machine mock
-        LabManager_x0020_SOAP_x0020_interfaceStub.Machine mockMachine =
-                mock(LabManager_x0020_SOAP_x0020_interfaceStub.Machine.class);
+        Machine mockMachine = mock(Machine.class);
         when(mockMachine.getName()).thenReturn(vmName);
         when(mockMachine.getId()).thenReturn(123567);
         when(mockMachine.getStatus()).thenReturn(2); // STATUS_ON
 
-        final LabManager_x0020_SOAP_x0020_interfaceStub.GetMachineByNameResponse mockGetMachineByNameResponse =
-                mock(LabManager_x0020_SOAP_x0020_interfaceStub.GetMachineByNameResponse.class);
+        final GetMachineByNameResponse mockGetMachineByNameResponse =
+                mock(GetMachineByNameResponse.class);
         when(mockGetMachineByNameResponse.getGetMachineByNameResult()).thenReturn(mockMachine);
 
         // prepare the SOAPInterface to return our mock objects
         when(mockSOAPInterface.getSingleConfigurationByName(
-                any(LabManager_x0020_SOAP_x0020_interfaceStub.GetSingleConfigurationByName.class),
-                any(LabManager_x0020_SOAP_x0020_interfaceStub.AuthenticationHeaderE.class))).thenReturn
+                any(GetSingleConfigurationByName.class),
+                any(AuthenticationHeaderE.class))).thenReturn
                 (getSingleConfigurationByNameResponse);
         when(mockSOAPInterface.getMachineByName(
-                any(LabManager_x0020_SOAP_x0020_interfaceStub.GetMachineByName.class),
-                any(LabManager_x0020_SOAP_x0020_interfaceStub.AuthenticationHeaderE.class))).thenReturn(mockGetMachineByNameResponse);
+                any(GetMachineByName.class),
+                any(AuthenticationHeaderE.class))).thenReturn(mockGetMachineByNameResponse);
 
         // prepare our LabManager to return the mock SOAPInterface
         final LabManager mockLabManager = mock(LabManager.class);
@@ -268,9 +277,9 @@ public class LabManagerVirtualMachineLauncherTest extends HudsonTestCase {
         
         // check if machinePerformAction was called with the correct arguments
 
-        ArgumentCaptor<LabManager_x0020_SOAP_x0020_interfaceStub.MachinePerformAction> machinePerformAction
-                = ArgumentCaptor.forClass(LabManager_x0020_SOAP_x0020_interfaceStub.MachinePerformAction.class);
-        verify(mockSOAPInterface).machinePerformAction(machinePerformAction.capture(), any(LabManager_x0020_SOAP_x0020_interfaceStub.AuthenticationHeaderE.class));
+        ArgumentCaptor<MachinePerformAction> machinePerformAction
+                = ArgumentCaptor.forClass(MachinePerformAction.class);
+        verify(mockSOAPInterface).machinePerformAction(machinePerformAction.capture(), any(AuthenticationHeaderE.class));
         assertEquals("Action must be 13", 13, machinePerformAction.getValue().getAction());
         assertEquals("Machine ID must be 123567", 123567, machinePerformAction.getValue().getMachineId());
         // never consume exception and don't tell us
@@ -314,5 +323,85 @@ public class LabManagerVirtualMachineLauncherTest extends HudsonTestCase {
         assertEquals("Idle action should be UNDEPLOY", LabManagerVirtualMachineLauncher
                 .MACHINE_ACTION_UNDEPLOY,
                 labManagerVirtualMachineLauncher.getIdleAction());
+    }
+    
+    @Test(expected=NullPointerException.class)
+    public void testPrelaunchSlaveCheck() throws IOException, InterruptedException, FormException {
+        // SOAP Interface mock
+        final LabManager_x0020_SOAP_x0020_interfaceStub mockSOAPInterface =
+                mock(LabManager_x0020_SOAP_x0020_interfaceStub.class);
+
+        // Prepare Configuration mock
+        Configuration configuration = mock(Configuration.class);
+        when(configuration.getId()).thenReturn(123456);
+
+        // prepare single configuration response
+        GetSingleConfigurationByNameResponse getSingleConfigurationByNameResponse =
+                mock(GetSingleConfigurationByNameResponse.class);
+        when(getSingleConfigurationByNameResponse.getGetSingleConfigurationByNameResult()).thenReturn(configuration);
+
+        // prepare the machine mock
+        Machine mockMachine = mock(Machine.class);
+        when(mockMachine.getName()).thenReturn(vmName);
+        when(mockMachine.getId()).thenReturn(123567);
+        when(mockMachine.getStatus()).thenReturn(1); // STATUS_OFF
+
+        final GetMachineByNameResponse mockGetMachineByNameResponse =
+                mock(GetMachineByNameResponse.class);
+        when(mockGetMachineByNameResponse.getGetMachineByNameResult()).thenReturn(mockMachine);
+
+        // prepare the SOAPInterface to return our mock objects
+        when(mockSOAPInterface.getSingleConfigurationByName(
+                any(GetSingleConfigurationByName.class),
+                any(AuthenticationHeaderE.class))).thenReturn
+                (getSingleConfigurationByNameResponse);
+        when(mockSOAPInterface.getMachineByName(
+                any(GetMachineByName.class),
+                any(AuthenticationHeaderE.class))).thenReturn(mockGetMachineByNameResponse);
+
+        // The LabManager that receives the max. online slaves, in this case 0.
+        // This will lead to an NPE during machine shutdown, because the
+        // VM wasn't registered with LabManager#markOneSlaveOnline since the
+        // implementation in LabManagerVirtualMachineSlave.LabManagerVirtualMComputerListener#prelaunch
+        // calls markOneSlaveOnline only if maxOnlineSlaves > 0.
+        LabManager labManager = 
+            spy(new LabManager("http://labhost:8080", "Test Lab Manager", "TestOrg", "Test Workspace",
+                                "Test Configuration", "TestUser", "Test Password", 0));
+        when(labManager.getLmStub()).thenReturn(mockSOAPInterface);
+
+        LabManagerVirtualMachineSlave mockLMVMSlave = mock(LabManagerVirtualMachineSlave.class);
+        ComputerLauncher mockComputerLauncher = mock(ComputerLauncher.class);
+        
+        // create a spied instance
+        LabManagerVirtualMachineLauncher labManagerVirtualMachineLauncher = 
+                new LabManagerVirtualMachineLauncher(mockComputerLauncher, 
+                "Test Lab Manager", vmName, "idle option", false, "launchDelay", false);
+        LabManagerVirtualMachineLauncher spiedLMVMLauncher = spy(labManagerVirtualMachineLauncher);
+        when(spiedLMVMLauncher.findOurLmInstance()).thenReturn(labManager);
+        
+        LabManagerVirtualMachineSlaveComputer mockSlaveComputer = mock(LabManagerVirtualMachineSlaveComputer.class);
+        when(mockSlaveComputer.getLauncher()).thenReturn(labManagerVirtualMachineLauncher);
+        when(mockSlaveComputer.getNode()).thenReturn(mockLMVMSlave);
+        when(mockSlaveComputer.getDisplayName()).thenReturn(vmName);
+        
+        LabManagerVirtualMComputerListener labManagerVirtualMComputerListener = 
+                new LabManagerVirtualMComputerListener();
+        
+        // This exposes a NPE
+        labManagerVirtualMComputerListener.preLaunch(mockSlaveComputer, TaskListener.NULL);
+        labManagerVirtualMachineLauncher.afterDisconnect(mockSlaveComputer, TaskListener.NULL);
+        
+        try
+        {
+            int slavesOnline = labManager.markOneSlaveOffline("NonExistent"); // this return the current count of slaves online
+            assertFalse("We should have never reached this here...", true);
+        }
+        catch(NullPointerException npe)
+        {
+        }
+        
+        verify(mockSlaveComputer).getLauncher();
+        verify(mockSOAPInterface).getConfiguration(any(GetConfiguration.class), any(AuthenticationHeaderE.class));
+        verify(configuration).getId();
     }
 }
