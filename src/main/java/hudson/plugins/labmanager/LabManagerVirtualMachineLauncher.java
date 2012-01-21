@@ -43,6 +43,8 @@ import hudson.slaves.SlaveComputer;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.rmi.RemoteException;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import org.kohsuke.stapler.DataBoundConstructor;
@@ -64,6 +66,9 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
     private Boolean overrideLaunchSupported;
     private int launchDelay;
     private boolean updateHostAddress;
+
+    private Lock vmShutdownLock = null;
+
     /**
      * Constants.
      */
@@ -170,7 +175,7 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
         final GetMachineByName getMachineByNameRequest = new GetMachineByName();
         getMachineByNameRequest.setConfigurationId(configuration.getId());
         getMachineByNameRequest.setName(this.vmName);
-        GetMachineByNameResponse machineByName = 
+        GetMachineByNameResponse machineByName =
                 lmStub.getMachineByName(getMachineByNameRequest, lmAuth);
         Machine vm = machineByName.getGetMachineByNameResult();
 
@@ -227,6 +232,7 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
         final PrintStream logger = taskListener.getLogger();
 
         logger.println("Starting Virtual Machine...");
+
         /**
          * What we know is that at least at one point this particular
          * machine existed.  But we want to be sure it still exists.
@@ -263,7 +269,7 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
         /*
          * Perform check if configuration is deployed and then deploy
          * configuration
-         */        
+         */
         if (machineAction == MACHINE_ACTION_DEPLOY) {
             Configuration configuration = getSingleConfiguration(labmanager);
 
@@ -272,10 +278,18 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
                 logger.printf("Deploy configuration '%s'\n", configuration.getName());
                 deployConfiguration(labmanager, configuration);
                 logger.printf("Configuration '%s' successfully deployed\n", configuration.getName());
-            } else {
+            }
+
+            vm = getMachine(labmanager);
+
+            if (vm.getStatus() == MACHINE_STATUS_UNDEPLOYED) {
                 logger.printf("Deploying virtual machine '%s' in configuration '%s'\n", vm.getName(), configuration.getName());
-                performMachineAction(labmanager, vm, machineAction);
+                performMachineAction(labmanager, vm, MACHINE_ACTION_DEPLOY);
                 logger.printf("Virtual machine '%s' successfully deployed\n", vm.getName());
+            } else if (vm.getStatus() == MACHINE_STATUS_OFF) {
+                logger.printf("Starting virtual machine '%s' in configuration '%s'\n", vm.getName(), configuration.getName());
+                performMachineAction(labmanager, vm, MACHINE_ACTION_ON);
+                logger.printf("Virtual machine '%s' successfully started\n", vm.getName());
             }
         } else {
             /*
@@ -283,11 +297,15 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
              * returns from the server.
              */
             if (machineAction != MACHINE_ACTION_NONE) {
+                logger.printf("Going to '%s' machine '%s'\n", 
+                        machineActionToString(machineAction), vm.getName());
                 performMachineAction(labmanager, vm, machineAction);
+                logger.printf("'%s' successfully executed for machine '%s'\n", 
+                        machineActionToString(machineAction), vm.getName());
             }
         }
 
-        // update VM information
+        // query the VM
         vm = getMachine(labmanager);
 
         try {
@@ -295,11 +313,17 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
              * Now we wait our launch delay amount before trying to connect. */
             Thread.sleep(launchDelay * 1000);
 
-            final ComputerLauncher decoratedLauncherDelegateForMachine = 
+            final ComputerLauncher decoratedLauncherDelegateForMachine =
                     getDecoratedLauncherDelegateForMachine(vm);
+
             decoratedLauncherDelegateForMachine.launch(slaveComputer, taskListener);
         } finally {
-            /* If the rest of the launcher fails, we free up a space. */
+            // TODO: This could easily been replaced by LabManagerVirtualMComputerListener#onlaunchFailure method
+            // the onLaunchFailure method will be called from SlaveComputer#_connect if the launch fails
+            // with an exception
+            /*
+             * If the rest of the launcher fails, we free up a space.
+             */
             if (slaveComputer.getChannel() == null) {
                 labmanager.markOneSlaveOffline(slaveComputer.getDisplayName());
             }
@@ -312,14 +336,25 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
     @Override
     public void afterDisconnect(SlaveComputer slaveComputer,
             TaskListener taskListener) {
-        taskListener.getLogger().println("Running disconnect procedure...");
-        delegate.afterDisconnect(slaveComputer, taskListener);
-        taskListener.getLogger().println("Shutting down Virtual Machine...");
+        final PrintStream logger = taskListener.getLogger();
 
-        LabManager labmanager = findOurLmInstance();
-        labmanager.markOneSlaveOffline(slaveComputer.getDisplayName());
+        // This method gets called twice:
+        // 1) SlaveComputer#disconnect
+        // 2) SlaveComputer#setChannel Channel.listener#onClosed
+        // For this reason (and to prevent errors during the SOAP communication)
+        // the access to the VM is synchronized
+        final Lock shutdownLock = getShutdownLock();
 
         try {
+            shutdownLock.lock();
+
+            logger.println("Running disconnect procedure...");
+            delegate.afterDisconnect(slaveComputer, taskListener);
+            logger.println("Shutting down Virtual Machine...");
+
+            LabManager labmanager = findOurLmInstance();
+            labmanager.markOneSlaveOffline(slaveComputer.getDisplayName());
+
             Machine vm = getMachine(labmanager);
 
             /* Determine the current state of the VM. */
@@ -338,21 +373,30 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
                     switch (idleAction) {
                         case MACHINE_ACTION_REVERT:
                             performMachineAction(labmanager, vm, MACHINE_ACTION_OFF);
-                            taskListener.getLogger().println("Waiting 60 seconds for shutdown to complete.");
+                            logger.println("Waiting 60 seconds for shutdown to complete.");
                             Thread.sleep(60000);
                         case MACHINE_ACTION_SUSPEND:
                         case MACHINE_ACTION_SHUTDOWN:
                         case MACHINE_ACTION_UNDEPLOY:
+                            logger.printf("Going to '%s' machine '%s'\n", 
+                                    machineActionToString(idleAction), 
+                                    vm.getName());
                             performMachineAction(labmanager, vm, idleAction);
+                            logger.printf("'%s' successfully executed for machine '%s'\n", 
+                                    machineActionToString(idleAction), 
+                                    vm.getName());
                             break;
                     }
                     break;
                 case MACHINE_STATUS_STUCK:
                 case MACHINE_STATUS_INVALID:
-                    LOGGER.log(Level.SEVERE, "Problem with the machine status!");
+                    LOGGER.log(Level.SEVERE, "Problem with the status of machine ''{0}''!", vm.getName());
             }
         } catch (Throwable t) {
             taskListener.fatalError(t.getMessage(), t);
+        }
+        finally {
+            shutdownLock.unlock();
         }
     }
 
@@ -381,7 +425,7 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
         if (this.overrideLaunchSupported == null) {
             return delegate.isLaunchSupported();
         } else {
-            LOGGER.log(Level.FINE, "Launch support is overridden to always return: " + overrideLaunchSupported);
+            LOGGER.log(Level.FINE, "Launch support is overridden to always return: {0}", overrideLaunchSupported);
             return overrideLaunchSupported;
         }
     }
@@ -431,14 +475,16 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
                 if (!oldLauncher.getHost().equals(machine.getExternalIP())) {
                     LOGGER.log(Level.FINE, "Create a new SSHLauncher with new host information");
 
-                    computerLauncher = new SSHLauncher(machine.getExternalIP(), 
-                            oldLauncher.getPort(), 
+                    computerLauncher = new SSHLauncher(machine.getExternalIP(),
+                            oldLauncher.getPort(),
                             oldLauncher.getUsername(),
-                            oldLauncher.getPassword(), 
-                            oldLauncher.getPrivatekey(), 
+                            oldLauncher.getPassword(),
+                            oldLauncher.getPrivatekey(),
                             oldLauncher.getJvmOptions(),
-                            oldLauncher.getJavaPath(), 
-                            null /* JDK installer. potentially wrong! */, 
+                            oldLauncher.getJavaPath(),
+                            null /*
+                             * JDK installer. potentially wrong!
+                             */,
                             oldLauncher.getPrefixStartSlaveCmd(),
                             oldLauncher.getSuffixStartSlaveCmd());
                 }
@@ -446,5 +492,50 @@ public class LabManagerVirtualMachineLauncher extends ComputerLauncher {
         }
 
         return computerLauncher;
+    }
+
+    /**
+     * Convert the numerical MACHINE_ACTION_* constants to strings
+     * @param machineAction the numerical machine action
+     *
+     * @return the machine action as string
+     */
+    public String machineActionToString(int machineAction) {
+        String machineActionString = "[UNKNOWN]";
+
+        switch(machineAction) {
+            case MACHINE_ACTION_NONE : machineActionString = "NONE";
+                break;
+            case MACHINE_ACTION_ON : machineActionString = "ON";
+                break;
+            case MACHINE_ACTION_OFF : machineActionString = "OFF";
+                break;
+            case MACHINE_ACTION_SUSPEND : machineActionString = "SUSPEND";
+                break;
+            case MACHINE_ACTION_RESUME : machineActionString = "RESUME";
+                break;
+            case MACHINE_ACTION_RESET : machineActionString = "RESET";
+                break;
+            case MACHINE_ACTION_SNAPSHOT : machineActionString = "SNAPSHOT";
+                break;
+            case MACHINE_ACTION_REVERT : machineActionString = "REVERT";
+                break;
+            case MACHINE_ACTION_SHUTDOWN : machineActionString = "SHUTDOWN";
+                break;
+            case MACHINE_ACTION_DEPLOY : machineActionString = "DEPLOY";
+                break;
+            case MACHINE_ACTION_UNDEPLOY : machineActionString = "UNDEPLOY";
+                break;
+        }
+
+        return machineActionString;
+    }
+
+    private Lock getShutdownLock() {
+        if (vmShutdownLock == null) {
+            vmShutdownLock = new ReentrantLock();
+        }
+
+        return vmShutdownLock;
     }
 }

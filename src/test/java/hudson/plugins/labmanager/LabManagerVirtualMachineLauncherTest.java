@@ -270,8 +270,8 @@ public class LabManagerVirtualMachineLauncherTest extends HudsonTestCase {
 
         labManagerVirtualMachineLauncher.afterDisconnect(mockSlaveComputer, mockTaskListener);
 
-        assertEquals("Log output should be", "Running disconnect procedure...\nShutting down Virtual Machine...\n", byteArrayOutputStream.toString());
-        verify(mockTaskListener, times(2)).getLogger();
+        assertEquals("Log output should be", "Running disconnect procedure...\nShutting down Virtual Machine...\nGoing to 'UNDEPLOY' machine 'Linux Test VM'\n'UNDEPLOY' successfully executed for machine 'Linux Test VM'\n", byteArrayOutputStream.toString());
+        verify(mockTaskListener, times(1)).getLogger();
         verify(mockSlaveComputer).getDisplayName();
         verify(mockComputerLauncher).afterDisconnect(mockSlaveComputer, mockTaskListener);
         
@@ -325,7 +325,7 @@ public class LabManagerVirtualMachineLauncherTest extends HudsonTestCase {
                 labManagerVirtualMachineLauncher.getIdleAction());
     }
     
-    @Test(expected=NullPointerException.class)
+    @Test
     public void testPrelaunchSlaveCheck() throws IOException, InterruptedException, FormException {
         // SOAP Interface mock
         final LabManager_x0020_SOAP_x0020_interfaceStub mockSOAPInterface =
@@ -364,10 +364,10 @@ public class LabManagerVirtualMachineLauncherTest extends HudsonTestCase {
         // VM wasn't registered with LabManager#markOneSlaveOnline since the
         // implementation in LabManagerVirtualMachineSlave.LabManagerVirtualMComputerListener#prelaunch
         // calls markOneSlaveOnline only if maxOnlineSlaves > 0.
-        LabManager labManager = 
+        LabManager spiedLabManager = 
             spy(new LabManager("http://labhost:8080", "Test Lab Manager", "TestOrg", "Test Workspace",
                                 "Test Configuration", "TestUser", "Test Password", 0));
-        when(labManager.getLmStub()).thenReturn(mockSOAPInterface);
+        when(spiedLabManager.getLmStub()).thenReturn(mockSOAPInterface);
 
         LabManagerVirtualMachineSlave mockLMVMSlave = mock(LabManagerVirtualMachineSlave.class);
         ComputerLauncher mockComputerLauncher = mock(ComputerLauncher.class);
@@ -377,31 +377,59 @@ public class LabManagerVirtualMachineLauncherTest extends HudsonTestCase {
                 new LabManagerVirtualMachineLauncher(mockComputerLauncher, 
                 "Test Lab Manager", vmName, "idle option", false, "launchDelay", false);
         LabManagerVirtualMachineLauncher spiedLMVMLauncher = spy(labManagerVirtualMachineLauncher);
-        when(spiedLMVMLauncher.findOurLmInstance()).thenReturn(labManager);
+        when(spiedLMVMLauncher.findOurLmInstance()).thenReturn(spiedLabManager);
         
         LabManagerVirtualMachineSlaveComputer mockSlaveComputer = mock(LabManagerVirtualMachineSlaveComputer.class);
-        when(mockSlaveComputer.getLauncher()).thenReturn(labManagerVirtualMachineLauncher);
+        when(mockSlaveComputer.getLauncher()).thenReturn(spiedLMVMLauncher);
         when(mockSlaveComputer.getNode()).thenReturn(mockLMVMSlave);
         when(mockSlaveComputer.getDisplayName()).thenReturn(vmName);
         
         LabManagerVirtualMComputerListener labManagerVirtualMComputerListener = 
                 new LabManagerVirtualMComputerListener();
         
-        // This exposes a NPE
         labManagerVirtualMComputerListener.preLaunch(mockSlaveComputer, TaskListener.NULL);
-        labManagerVirtualMachineLauncher.afterDisconnect(mockSlaveComputer, TaskListener.NULL);
+        spiedLMVMLauncher.afterDisconnect(mockSlaveComputer, TaskListener.NULL);
+        int slaveCount = spiedLabManager.markOneSlaveOffline(vmName);
         
-        try
-        {
-            int slavesOnline = labManager.markOneSlaveOffline("NonExistent"); // this return the current count of slaves online
-            assertFalse("We should have never reached this here...", true);
-        }
-        catch(NullPointerException npe)
-        {
-        }
+        assertEquals("Slave count must be zero", 0, slaveCount);
         
         verify(mockSlaveComputer).getLauncher();
-        verify(mockSOAPInterface).getConfiguration(any(GetConfiguration.class), any(AuthenticationHeaderE.class));
-        verify(configuration).getId();
+    }
+    
+    @Test
+    public void testMachineActionToString() {
+        LabManagerVirtualMachineLauncher labManagerVirtualMachineLauncher = 
+                new LabManagerVirtualMachineLauncher(null, 
+                "Test Lab Manager", vmName, "idle option", false, "launchDelay", false);
+
+        String action = labManagerVirtualMachineLauncher.machineActionToString(0);
+        assertEquals("Action must be NONE", "NONE", action);
+        
+        action = labManagerVirtualMachineLauncher.machineActionToString(1);
+        assertEquals("Action must be ON", "ON", action);
+
+        action = labManagerVirtualMachineLauncher.machineActionToString(2);
+        assertEquals("Action must be OFF", "OFF", action);
+
+        action = labManagerVirtualMachineLauncher.machineActionToString(3);
+        assertEquals("Action must be SUSPEND", "SUSPEND", action);
+        
+        action = labManagerVirtualMachineLauncher.machineActionToString(4);
+        assertEquals("Action must be RESUME", "RESUME", action);
+        
+        action = labManagerVirtualMachineLauncher.machineActionToString(5);
+        assertEquals("Action must be RESET", "RESET", action);
+        
+        action = labManagerVirtualMachineLauncher.machineActionToString(6);
+        assertEquals("Action must be SNAPSHOT", "SNAPSHOT", action);
+
+        action = labManagerVirtualMachineLauncher.machineActionToString(7);
+        assertEquals("Action must be REVERT", "REVERT", action);
+
+        action = labManagerVirtualMachineLauncher.machineActionToString(8);
+        assertEquals("Action must be SHUTDOWN", "SHUTDOWN", action);
+        
+        action = labManagerVirtualMachineLauncher.machineActionToString(12);
+        assertEquals("Action must be DEPLOY", "DEPLOY", action);
     }
 }
