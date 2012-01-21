@@ -78,7 +78,7 @@ public class LabManager extends Cloud {
     private final String password;
     private final int maxOnlineSlaves;
     private transient int currentOnlineSlaveCount = 0;
-    private transient ArrayList currentOnlineSlaves;
+    private transient ArrayList currentOnlineSlaves = null;
     /**
      * Information to connect to Lab Manager and send SOAP requests.
      */
@@ -165,11 +165,14 @@ public class LabManager extends Cloud {
      * @param vmName The name of the slave we're bringing offline.
      */
     public synchronized int markOneSlaveOffline(String vmName) {
-        if (currentOnlineSlaves.contains(vmName)) {
-            currentOnlineSlaves.remove(vmName);
-            return --currentOnlineSlaveCount;
-        } else
-            return currentOnlineSlaveCount;
+        if (currentOnlineSlaves != null) {
+            if (currentOnlineSlaves.contains(vmName)) {
+                currentOnlineSlaves.remove(vmName);
+                return --currentOnlineSlaveCount;
+            } else
+                return currentOnlineSlaveCount;
+        }
+        return currentOnlineSlaveCount;
     }
 
     public LabManager_x0020_SOAP_x0020_interfaceStub getLmStub() {
@@ -187,7 +190,9 @@ public class LabManager extends Cloud {
             final Options options = lmStub._getServiceClient().getOptions();
             options.setProperty(HTTPConstants.SO_TIMEOUT, new Integer(timeOutInMilliSeconds));
             options.setProperty(HTTPConstants.CONNECTION_TIMEOUT, new Integer(timeOutInMilliSeconds));
-
+            // This is a workaround for an AXIS2 issue that is described here:
+            // https://sites.google.com/site/cmhtechinfo/software-development/java/apache-axis-2
+            options.setSoapVersionURI(org.apache.axis2.Constants.URI_SOAP11_ENV);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
